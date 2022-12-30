@@ -1,7 +1,9 @@
-ARG NODE_VERSION=latest
-ARG PYTHON_VERSION=latest
+ARG NODE_VERSION=12
+ARG PYTHON_VERSION=3.6
 
+#
 # --- Build assets with NodeJS
+#
 
 FROM node:${NODE_VERSION} AS build
 
@@ -11,15 +13,17 @@ ENV SUPERSET_HOME=/var/lib/superset/
 
 # Download source
 WORKDIR ${SUPERSET_HOME}
-RUN wget -O /tmp/superset.tar.gz https://github.com/apache/incubator-superset/archive/${SUPERSET_VERSION}.tar.gz && \
-    tar xzf /tmp/superset.tar.gz -C ${SUPERSET_HOME} --strip-components=1
+RUN wget -qO /tmp/superset.tar.gz https://github.com/apache/incubator-superset/archive/${SUPERSET_VERSION}.tar.gz
+RUN tar xzf /tmp/superset.tar.gz -C ${SUPERSET_HOME} --strip-components=1
 
 # Build assets
-WORKDIR ${SUPERSET_HOME}/superset/assets
-RUN npm install && \
-    npm run build
+WORKDIR ${SUPERSET_HOME}/superset-frontend/
+RUN npm install
+RUN npm run build
 
+#
 # --- Build dist package with Python 3
+#
 
 FROM python:${PYTHON_VERSION} AS dist
 
@@ -30,10 +34,12 @@ COPY --from=build ${SUPERSET_HOME} .
 COPY requirements-db.txt .
 
 # Create package to install
-RUN python setup.py sdist && \
-    tar czfv /tmp/superset.tar.gz requirements.txt requirements-db.txt dist
+RUN python setup.py sdist
+RUN tar czfv /tmp/superset.tar.gz requirements.txt requirements-db.txt dist
 
+#
 # --- Install dist package and finalize app
+#
 
 FROM python:${PYTHON_VERSION} AS final
 
@@ -42,19 +48,21 @@ ENV GUNICORN_BIND=0.0.0.0:8088 \
     GUNICORN_LIMIT_REQUEST_FIELD_SIZE=0 \
     GUNICORN_LIMIT_REQUEST_LINE=0 \
     GUNICORN_TIMEOUT=60 \
-    GUNICORN_WORKERS=2 \
+    GUNICORN_WORKERS=3 \
+    GUNICORN_THREADS=4 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PYTHONPATH=/etc/superset:/home/superset:$PYTHONPATH \
     SUPERSET_REPO=apache/incubator-superset \
     SUPERSET_VERSION=${SUPERSET_VERSION} \
     SUPERSET_HOME=/var/lib/superset
-ENV GUNICORN_CMD_ARGS="--workers ${GUNICORN_WORKERS} --timeout ${GUNICORN_TIMEOUT} --bind ${GUNICORN_BIND} --limit-request-line ${GUNICORN_LIMIT_REQUEST_LINE} --limit-request-field_size ${GUNICORN_LIMIT_REQUEST_FIELD_SIZE}"
+ENV GUNICORN_CMD_ARGS="--workers ${GUNICORN_WORKERS} --threads ${GUNICORN_THREADS} --timeout ${GUNICORN_TIMEOUT} --bind ${GUNICORN_BIND} --limit-request-line ${GUNICORN_LIMIT_REQUEST_LINE} --limit-request-field_size ${GUNICORN_LIMIT_REQUEST_FIELD_SIZE}"
 
 # Create superset user & install dependencies
 WORKDIR /tmp/superset
 COPY --from=dist /tmp/superset.tar.gz .
-RUN useradd -U -m superset && \
+RUN groupadd supergroup && \
+    useradd -U -m -G supergroup superset && \
     mkdir -p /etc/superset && \
     mkdir -p ${SUPERSET_HOME} && \
     chown -R superset:superset /etc/superset && \
@@ -66,6 +74,7 @@ RUN useradd -U -m superset && \
         default-libmysqlclient-dev \
         freetds-bin \
         freetds-dev \
+        libaio1 \
         libffi-dev \
         libldap2-dev \
         libpq-dev \
@@ -88,5 +97,5 @@ VOLUME /etc/superset \
 # Finalize application
 EXPOSE 8088
 HEALTHCHECK CMD ["curl", "-f", "http://localhost:8088/health"]
-CMD ["gunicorn", "superset:app"]
+CMD ["gunicorn", "superset.app:create_app()"]
 USER superset
